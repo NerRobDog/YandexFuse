@@ -15,11 +15,11 @@ client = APIClient(token=TOKEN, base_url=URL)
 # print(metadata)
 # metadata = client.get_metadata('/Горы.jpg')
 # print(metadata)
-
-# Download file
-# client.download_file('/Горы.jpg', "/Users/nik/Downloads/Горы.jpg")
-
-# Error handling
+#
+# # Download file
+client.download_file('/Горы.jpg', "/Users/nik/Downloads/Горы.jpg")
+#
+# # Error handling
 # try:
 #     # Получение метаданных несуществующего файла
 #     metadata = client.get_metadata('/НесуществующийФайл.jpg')
