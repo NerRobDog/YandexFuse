@@ -10,12 +10,12 @@ class APIClient:
 
     def get_metadata(self, path: str) -> FileMetadata:
         """Получение метаданных папки/файла"""
-        data = self.io.get("resources", params={"path": path})
+        data = self.io.get("resources", params={"path": self.io._encode_path(path)})
         return FileMetadata.from_json(data)
 
     def list_folder(self, path: str) -> List[FileMetadata]:
         """Получение списка файлов в папке"""
-        data = self.io.get("resources", params={"path": path})
+        data = self.io.get("resources", params={"path": self.io._encode_path(path)})
 
         if data['type'] != 'dir':
             raise ValueError(f"Path {path} is not a directory")
