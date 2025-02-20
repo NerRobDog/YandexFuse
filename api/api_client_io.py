@@ -6,6 +6,11 @@ import requests
 from models.exceptions import APIError
 
 
+def _encode_path(path: str) -> str:
+    """Кодирует путь для использования в URL"""
+    return quote(path)
+
+
 class APIClientIO:
     @staticmethod
     def download(download_url: str, chunk_size: int = 8192) -> Iterator[bytes]:
@@ -26,10 +31,6 @@ class APIClientIO:
             "Authorization": f"OAuth {self.token}",
             "Content-Type": "application/json"
         }
-
-    def _encode_path(self, path: str) -> str:
-        """Кодирует путь для использования в URL"""
-        return quote(path)
 
     def _handle_error(self, response: requests.Response) -> None:
         """Обработка ошибок от API"""
@@ -67,3 +68,10 @@ class APIClientIO:
     def delete(self, endpoint: str, **kwargs) -> Dict[str, Any]:
         """DELETE-запрос"""
         return self._make_request('DELETE', endpoint, **kwargs)
+
+    def upload(self, upload_url: str, file_path: str) -> None:
+        """ Загрузка файла по ссылке """
+        with open(file_path, 'rb') as file:
+            response = requests.put(upload_url, headers=self.headers, data=file)
+            if not response.ok:
+                self._handle_error(response)
