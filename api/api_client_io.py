@@ -49,9 +49,15 @@ class APIClientIO:
             response = requests.request(method, url, headers=self.headers, params=params, **kwargs)
             if not response.ok:
                 self._handle_error(response)
-            return response.json()
+            if response.status_code == 204:
+                return {}
+            if response.text:
+                return response.json()
+            return {}
         except requests.exceptions.RequestException as e:
             raise RuntimeError(f"Ошибка при запросе к {url}: {e}") from e
+        except ValueError as e:
+            raise RuntimeError(f"Ошибка обработки JSON ответа от {url}: {e}") from e
 
     def get(self, endpoint: str, **kwargs) -> Dict[str, Any]:
         """GET-запрос"""

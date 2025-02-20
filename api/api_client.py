@@ -50,18 +50,45 @@ class APIClient:
         # 2. Загружаем файл по ссылке через APIClientIO
         self.io.upload(upload_url, local_path)
 
+    def upload_file_bypass(self, path: str, local_path: str) -> None:
+        """Загрузка файла с обходом ограничения скорости"""
+        import os
+        original_path = path
+        file_name, ext = os.path.splitext(path)
+
+        # Список расширений с ограничением скорости
+        limited_extensions = {'.db', '.dat', '.zip', '.gz', '.rar', '.mp4', '.avi', '.mov'}
+
+        # Если расширение в списке ограниченных, меняем его
+        if ext.lower() in limited_extensions:
+            path = f"{file_name}.tmp"
+
+        # Получаем ссылку на загрузку с временным расширением
+        upload_data = self.io.get(endpoint="resources/upload", params={"path": path})
+        upload_url = upload_data.get("href")
+
+        if not upload_url:
+            raise ValueError("Не удалось получить ссылку на загрузку")
+
+        # Загружаем файл
+        self.io.upload(upload_url, local_path)
+
+        # # Если расширение было изменено, переименовываем обратно
+        if path != original_path:
+            self.move(path, original_path)
+
     def create_folder(self, path: str) -> None:
         """Создание папки"""
-        raise NotImplementedError
+        self.io.put("resources", params={"path": path})
 
     def delete_file(self, path: str) -> None:
         """Удаление файла"""
-        raise NotImplementedError
+        self.io.delete("resources", params={"path": path})
 
     def delete_folder(self, path: str) -> None:
         """Удаление папки"""
-        raise NotImplementedError
+        self.io.delete("resources", params={"path": path})
 
     def move(self, from_path: str, to_path: str) -> None:
         """Перемещение файла/папки"""
-        raise NotImplementedError
+        self.io.post("resources/move", params={"from": from_path, "path": to_path})
