@@ -1,55 +1,46 @@
+# cache/chunk_manager.py
 import os
+from logger.logger import setup_logger
 
 class ChunkManager:
     """
-    ChunkManager умеет скачивать куски (чанки) файла по Range-запросам.
-    По умолчанию мы берём chunk_size=1MB, но это можно менять.
+    ChunkManager скачивает чанки файла по Range-запросам.
+    По умолчанию используется chunk_size=1МБ, но это можно менять.
+    Все сетевые вызовы инкапсулированы здесь для удобства будущего перехода на асинхронность.
     """
     def __init__(self, api_client, chunk_size=1024 * 1024):
+        self.logger = setup_logger(self.__class__.__name__)
         self.api_client = api_client
         self.chunk_size = chunk_size
-
-        # Локальная папка, где будем складывать чанки
         self.cache_dir = '/tmp/yadisk_cache'
         os.makedirs(self.cache_dir, exist_ok=True)
+        self.logger.debug(f"ChunkManager инициализирован: chunk_size={chunk_size}")
 
     def get_chunk(self, path: str, chunk_index: int) -> bytes:
-        """
-        Вернёт данные конкретного чанка (chunk_index) файла `path`.
-        Если чанк уже скачан, то просто прочитаем его локально.
-        Если нет, скачаем с Я.Диска (Range-запрос), сохраним и вернём.
-        """
         local_chunk_path = self._make_local_chunk_path(path, chunk_index)
-
         if not os.path.exists(local_chunk_path):
-            # Надо скачать
+            self.logger.debug(f"Чанк {chunk_index} для {path} не найден локально. Скачиваем...")
             self._download_chunk(path, chunk_index, local_chunk_path)
-
-        # Читаем файл с диска и возвращаем байты
+        else:
+            self.logger.debug(f"Чанк {chunk_index} для {path} найден локально.")
         with open(local_chunk_path, 'rb') as f:
-            return f.read()
+            data = f.read()
+        self.logger.debug(f"Чанк {chunk_index} для {path} прочитан: {len(data)} байт.")
+        return data
 
     def _download_chunk(self, path: str, chunk_index: int, local_chunk_path: str) -> None:
-        """
-        Скачивает нужные байты и сохраняет их.
-        """
         start_byte = chunk_index * self.chunk_size
         end_byte = start_byte + self.chunk_size - 1
-
-        # Допустим, мы добавили в api_client метод download_range
-        # который делает GET запрос с заголовком Range
+        self.logger.debug(f"Скачивание чанка для {path}: bytes={start_byte}-{end_byte}")
         response = self.api_client.download_range(path, start_byte, end_byte)
         if response.status_code != 206:
-            raise RuntimeError(f"Range-запрос вернул {response.status_code}")
-
-        # Сохраняем ответ в файл
+            self.logger.error(f"Ошибка загрузки чанка {chunk_index} для {path}: {response.status_code}")
+            raise RuntimeError(f"Range-запрос вернул {response.status_code} для {path}")
         with open(local_chunk_path, 'wb') as f:
             f.write(response.content)
+        self.logger.debug(f"Чанк {chunk_index} для {path} сохранён в {local_chunk_path} ({len(response.content)} байт).")
 
     def _make_local_chunk_path(self, path: str, chunk_index: int) -> str:
-        """
-        Создаём "уникальное" имя для файла-чанка, чтобы хранить его в /tmp/yadisk_cache
-        """
-        filename = os.path.basename(path)   # только имя файла
+        filename = os.path.basename(path)
         chunk_filename = f"{filename}.chunk_{chunk_index}"
         return os.path.join(self.cache_dir, chunk_filename)

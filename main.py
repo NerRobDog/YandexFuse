@@ -33,4 +33,4 @@ signal.signal(signal.SIGINT, lambda s, f: cleanup(MOUNT_POINT, s, f))
 signal.signal(signal.SIGTERM, lambda s, f: cleanup(MOUNT_POINT, s, f))
 
 # Монтируем файловую систему
-FUSE(fs, MOUNT_POINT, nothreads=True, foreground=True, debug=True)
+FUSE(fs, MOUNT_POINT, nothreads=True, foreground=True, debug=False)

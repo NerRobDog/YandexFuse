@@ -6,7 +6,7 @@ from logging.handlers import RotatingFileHandler
 LOG_FORMAT = "[%(levelname)s] [%(asctime)s] [%(name)s] %(message)s"
 
 # Папка для логов
-LOG_DIR = "/tmp/yadisk_logs"
+LOG_DIR = "/Users/nik/Downloads/fuse_logs"
 os.makedirs(LOG_DIR, exist_ok=True)
 
 # Настройки логирования

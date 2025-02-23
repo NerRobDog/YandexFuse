@@ -1,42 +1,57 @@
-import errno
+# fuse_fs/fuse_handler.py
 import os
 import stat
+import errno
 from datetime import datetime
 from fuse import FUSE, Operations, FuseOSError
 from api.api_client import APIClient
-from cache.chunk_manager import ChunkManager
 from cache.cache_manager import CacheManager
+from cache.chunk_manager import ChunkManager
 
 class DiskFS(Operations):
     """
-    Класс DiskFS отвечает за связь с FUSE. Он реализует методы, которые
-    FUSE вызывает при доступе к файлам и папкам. Внутри каждого метода
-    мы будем вызывать логику, которая работает с Яндекс-Диском.
+    DiskFS – FUSE-обработчик, реализующий методы для работы с файловой системой.
+    Использует ChunkManager и CacheManager для оптимизации запросов и кэширования.
     """
     def __init__(self, api_client: APIClient):
         super().__init__()
         self.api_client = api_client
         self.chunk_manager = ChunkManager(api_client)
         self.cache_manager = CacheManager()
-
-        self.open_files = {}  # fh -> path
+        self.open_files = {}  # mapping: file handle -> path
         self._next_fh = 1
 
-    def getattr(self, path, fh=None):
-        """
-        Возвращает словарь атрибутов (аналог `stat()`).
-        FUSE вызывает этот метод, когда ему нужно узнать,
-        что это за файл, какой у него размер, время модификации и т.д.
-        """
-        # === Проверяем кэш метаданных ===
-        cached_metadata = self.cache_manager.get_metadata_from_cache(path)
-        if cached_metadata:
-            return cached_metadata
+    def _build_stat(self, metadata) -> dict:
+        """Формирует словарь атрибутов (stat) на основе метаданных."""
+        if metadata.file_type == 'dir':
+            mode = stat.S_IFDIR | 0o755
+            nlink = 2
+        else:
+            mode = stat.S_IFREG | 0o644
+            nlink = 1
+        created = int(datetime.fromisoformat(metadata.created.replace('Z', '+00:00')).timestamp())
+        modified = int(datetime.fromisoformat(metadata.modified.replace('Z', '+00:00')).timestamp())
+        return {
+            'st_mode': mode,
+            'st_size': metadata.size or 0,
+            'st_ctime': created,
+            'st_mtime': modified,
+            'st_atime': modified,
+            'st_nlink': nlink,
+            'st_uid': os.getuid(),
+            'st_gid': os.getgid(),
+        }
 
-        # === Специальная обработка корня "/" ===
+    def getattr(self, path, fh=None):
+        """Возвращает атрибуты файла или каталога (аналог stat)."""
+        # Сначала пытаемся получить данные из кэша метаданных
+        cached = self.cache_manager.get_metadata_from_cache(path)
+        if cached:
+            return cached
+
         if path == "/":
             root_stat = {
-                'st_mode': stat.S_IFDIR | 0o755,  # S_IFDIR для каталога
+                'st_mode': stat.S_IFDIR | 0o755,
                 'st_nlink': 2,
                 'st_size': 0,
                 'st_ctime': 0,
@@ -48,113 +63,96 @@ class DiskFS(Operations):
             self.cache_manager.update_metadata_cache(path, root_stat)
             return root_stat
 
-        # === Запрашиваем метаданные через API ===
         try:
             metadata = self.api_client.get_metadata(path)
-
-            # Определяем режим: папка (S_IFDIR) или файл (S_IFREG)
-            if metadata.file_type == 'dir':
-                mode = stat.S_IFDIR | 0o755  # drwxr-xr-x
-                nlink = 2
-            else:
-                mode = stat.S_IFREG | 0o644  # -rw-r--r--
-                nlink = 1
-
-            # Преобразуем время в Unix timestamp
-            created = int(datetime.fromisoformat(metadata.created.replace('Z', '+00:00')).timestamp())
-            modified = int(datetime.fromisoformat(metadata.modified.replace('Z', '+00:00')).timestamp())
-
-            result = {
-                'st_mode': mode,
-                'st_size': metadata.size or 0,
-                'st_ctime': created,
-                'st_mtime': modified,
-                'st_atime': modified,
-                'st_nlink': nlink,
-                'st_uid': os.getuid(),
-                'st_gid': os.getgid(),
-            }
-
-            # === Обновляем кэш метаданных ===
-            self.cache_manager.update_metadata_cache(path, result)
-            return result
-
+            stat_data = self._build_stat(metadata)
+            self.cache_manager.update_metadata_cache(path, stat_data)
+            return stat_data
         except RuntimeError as e:
-            # Если API вернул ошибку 404 — файл не найден
             if "404" in str(e):
                 raise FuseOSError(errno.ENOENT)
-            # Иначе поднимаем общее исключение
             raise FuseOSError(errno.EIO)
 
     def readdir(self, path, fh):
-        """
-        Список содержимого папки (ls). Нужно вернуть
-        хотя бы ['.', '..'] и дальше все имена файлов и папок внутри.
-        """
-        print(f"readdir called for path={path}")
-
+        """Возвращает список содержимого каталога, обновляя кэш метаданных и фильтруя скрытые файлы."""
         try:
+            # Если содержимое каталога уже в кэше, используем его
+            cached_entries = self.cache_manager.get_directory_cache(path)
+            if cached_entries is not None:
+                return cached_entries
+
+            # Получаем список объектов каталога через API (list_folder возвращает FileMetadata)
             items = self.api_client.list_folder(path)
-            print(f"list_folder returned {len(items)} items")
-            yield '.'
-            yield '..'
+            filtered_entries = ['.', '..']
             for item in items:
-                yield item.name
+                # Фильтруем скрытые файлы и системные (например, .DS_Store, имена начинающиеся с "._")
+                if item.name.startswith('.') or item.name.lower() == '.ds_store':
+                    continue
+                filtered_entries.append(item.name)
+                # Формируем полный путь объекта (учитывая, что для корня он выглядит как "/имя")
+                full_path = os.path.join(path, item.name) if path != "/" else "/" + item.name
+                # Обновляем кэш метаданных для объекта
+                self.cache_manager.update_metadata_cache(full_path, self._build_stat(item))
+            self.cache_manager.set_directory_cache(path, filtered_entries)
+            return filtered_entries
         except Exception as e:
-            print(f"readdir EXCEPTION for path={path}: {e}")
-            # Если нет доступа или папка не существует
             raise FuseOSError(errno.ENOENT)
 
     def open(self, path, flags):
-        # Если файл не существует или это папка, бросим ошибку
+        """Открытие файла: проверка существования и генерация уникального дескриптора."""
         metadata = self.api_client.get_metadata(path)
         if metadata.file_type != 'file':
             raise FuseOSError(errno.ENOENT)
-
-        # Создаём "уникальный" дескриптор и запоминаем, какой путь ему соответствует
         fh = self._next_fh
         self.open_files[fh] = path
         self._next_fh += 1
         return fh
 
-    def read(self, path, size, offset, fh):
-        """
-        Здесь мы переходим к «гибридному» подходу:
-        - Делим файл на чанки по self.chunk_manager.chunk_size (например, 1 МБ).
-        - При чтении циклами получаем нужные чанки.
-        - Возвращаем только тот фрагмент, который запросили (size, offset).
-        """
-        # Предположим, мы не опираемся на path, а берём его из open_files.
-        path = self.open_files[fh]
-
+    def _read_from_chunks(self, path: str, offset: int, size: int) -> bytes:
+        """Собирает данные файла из чанков с учётом offset и size."""
         chunk_size = self.chunk_manager.chunk_size
-        result = bytearray()
-
-        # Мы хотим прочитать [offset, offset+size)
         end_offset = offset + size
+        result = bytearray()
         current_offset = offset
 
         while current_offset < end_offset:
             chunk_index = current_offset // chunk_size
-            chunk_start_byte = chunk_index * chunk_size
-            chunk_end_byte = chunk_start_byte + chunk_size
-
-            # Скачиваем чанк (или берём из кэша)
             chunk_data = self.chunk_manager.get_chunk(path, chunk_index)
-
-            # (Если используем CacheManager, можно mark: self.cache_manager.add_chunk(...))
-
-            # Определяем диапазон внутри chunk_data, который нам нужен
-            # Пример: если current_offset=512, chunk_start_byte=0, тогда local_offset=512
-            local_offset = current_offset - chunk_start_byte
-            # А максимальное количество байт, которое нам ещё нужно:
-            bytes_we_still_need = end_offset - current_offset
-            # Возьмём подотрезок
-            slice_data = chunk_data[local_offset : local_offset + bytes_we_still_need]
-
+            local_offset = current_offset - (chunk_index * chunk_size)
+            bytes_needed = end_offset - current_offset
+            slice_data = chunk_data[local_offset:local_offset + bytes_needed]
             result.extend(slice_data)
             current_offset += len(slice_data)
-
+            if len(slice_data) == 0:
+                break  # предохранитель на случай непредвиденного завершения данных
         return bytes(result)
 
-    # Остальные методы – mkdir, unlink, rmdir и т.д. – пока пропустим или оставим пустыми.
+    def read(self, path, size, offset, fh):
+        """Чтение файла, реализованное через сбор данных из чанков."""
+        actual_path = self.open_files.get(fh, path)
+        return self._read_from_chunks(actual_path, offset, size)
+
+    # Заглушки для остальных методов
+    def write(self, path, buf, offset, fh):
+        return len(buf)
+
+    def flush(self, path, fh):
+        return 0
+
+    def unlink(self, path):
+        raise FuseOSError(errno.ENOENT)
+
+    def mkdir(self, path, mode):
+        pass
+
+    def rmdir(self, path):
+        pass
+
+    def rename(self, old, new):
+        pass
+
+    def create(self, path, mode, fi=None):
+        return 0
+
+    def truncate(self, path, length, fh=None):
+        pass
