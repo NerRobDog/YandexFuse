@@ -3,6 +3,8 @@ import os
 import stat
 import errno
 from datetime import datetime
+from os.path import basename
+
 from fuse import FUSE, Operations, FuseOSError
 from api.api_client import APIClient
 from cache.cache_manager import CacheManager
@@ -45,6 +47,11 @@ class DiskFS(Operations):
     def getattr(self, path, fh=None):
         """Возвращает атрибуты файла или каталога (аналог stat)."""
         # Сначала пытаемся получить данные из кэша метаданных
+        if os.path.basename(path).startswith('.'):
+            # print(f"Попытка обратиться к {path}")
+            raise FuseOSError(errno.ENOENT)
+        # else:
+        #     print(f"Попытка обратиться к {path}")
         cached = self.cache_manager.get_metadata_from_cache(path)
         if cached:
             return cached
@@ -64,6 +71,7 @@ class DiskFS(Operations):
             return root_stat
 
         try:
+            print(f"Получение метаданных для {path}")
             metadata = self.api_client.get_metadata(path)
             stat_data = self._build_stat(metadata)
             self.cache_manager.update_metadata_cache(path, stat_data)
@@ -83,11 +91,8 @@ class DiskFS(Operations):
 
             # Получаем список объектов каталога через API (list_folder возвращает FileMetadata)
             items = self.api_client.list_folder(path)
-            filtered_entries = ['.', '..']
+            filtered_entries = []
             for item in items:
-                # Фильтруем скрытые файлы и системные (например, .DS_Store, имена начинающиеся с "._")
-                if item.name.startswith('.') or item.name.lower() == '.ds_store':
-                    continue
                 filtered_entries.append(item.name)
                 # Формируем полный путь объекта (учитывая, что для корня он выглядит как "/имя")
                 full_path = os.path.join(path, item.name) if path != "/" else "/" + item.name
@@ -99,9 +104,17 @@ class DiskFS(Operations):
             raise FuseOSError(errno.ENOENT)
 
     def open(self, path, flags):
-        """Открытие файла: проверка существования и генерация уникального дескриптора."""
-        metadata = self.api_client.get_metadata(path)
-        if metadata.file_type != 'file':
+        # Сначала пытаемся получить метаданные из кэша
+        cached_metadata = self.cache_manager.get_metadata_from_cache(path)
+        if cached_metadata is not None:
+            metadata = cached_metadata
+        else:
+            # Если в кэше нет, запрашиваем через API и обновляем кэш
+            metadata_obj = self.api_client.get_metadata(path)
+            metadata = self._build_stat(metadata_obj)
+            self.cache_manager.update_metadata_cache(path, metadata)
+        # Проверяем, что это файл (а не, например, каталог)
+        if not (metadata['st_mode'] & stat.S_IFREG):
             raise FuseOSError(errno.ENOENT)
         fh = self._next_fh
         self.open_files[fh] = path

@@ -8,7 +8,7 @@ class ChunkManager:
     По умолчанию используется chunk_size=1МБ, но это можно менять.
     Все сетевые вызовы инкапсулированы здесь для удобства будущего перехода на асинхронность.
     """
-    def __init__(self, api_client, chunk_size=1024 * 1024):
+    def __init__(self, api_client, chunk_size=1024 * 1024 * 16):
         self.logger = setup_logger(self.__class__.__name__)
         self.api_client = api_client
         self.chunk_size = chunk_size
