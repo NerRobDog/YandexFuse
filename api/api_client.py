@@ -48,7 +48,9 @@ class APIClient:
             raise ValueError("Не удалось получить ссылку на загрузку")
 
         # 2. Загружаем файл по ссылке через APIClientIO
-        self.io.upload(upload_url, local_path)
+        # self.io.upload(upload_url, local_path)
+        # self.io.upload_chunks(upload_url, local_path)
+        self.io.upload_retry(upload_url, local_path)
 
     def upload_file_bypass(self, path: str, local_path: str) -> None:
         """Загрузка файла с обходом ограничения скорости"""

@@ -1,3 +1,4 @@
+from http.client import responses
 from typing import Optional, Dict, Any, Iterator
 from urllib.parse import quote
 
@@ -79,5 +80,38 @@ class APIClientIO:
         """ Загрузка файла по ссылке """
         with open(file_path, 'rb') as file:
             response = requests.put(upload_url, headers=self.headers, data=file)
+            if not response.ok:
+                self._handle_error(response)
+
+    def upload_chunks(self, upload_url: str, file_path: str, chunk_size: int = 1024 * 1024) -> None:
+        """ Загрузка файла по частям """
+        with open(file_path, 'rb') as file:
+            while True:
+                chunk = file.read(chunk_size)
+                if not chunk:
+                    break
+                response = requests.put(upload_url, headers=self.headers, data=chunk)
+                if not response.ok:
+                    self._handle_error(response)
+
+    def upload_chunk(self, upload_url: str, chunk: bytes) -> requests.Response:
+        """Загрузка одной части файла"""
+        response = requests.put(upload_url, headers=self.headers, data=chunk)
+        return response
+
+    def upload_retry(self, upload_url: str, file_path: str, max_retries: int = 3) -> None:
+        """ Загрузка файла по ссылке с повторными попытками """
+        from requests.adapters import HTTPAdapter
+        from urllib3.util.retry import Retry
+
+        session = requests.Session()
+        retries = Retry(total=max_retries,
+                        backoff_factor=0.1,
+                        status_forcelist=[500, 502, 503, 504])
+
+        session.mount('https://', HTTPAdapter(max_retries=retries))
+
+        with open(file_path, 'rb') as file:
+            response = session.put(upload_url, headers=self.headers, data=file)
             if not response.ok:
                 self._handle_error(response)
